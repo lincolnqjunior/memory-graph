@@ -230,16 +230,17 @@ export async function generateSessionBriefing(
 
   // Recent activities
   const cutoffDate = new Date(Date.now() - recencyDays * 24 * 60 * 60 * 1000);
+  const intLimit = Math.max(0, Math.floor(Number(maxActivities) || 10));
 
   const recentQuery = `
     MATCH (m:Memory)
     WHERE (m.context_project_path = $project_path OR m.context_project_path CONTAINS $project_name)
-      AND datetime(m.created_at) >= datetime($cutoff)
+      AND m.created_at >= $cutoff
     RETURN m.id as id, m.type as type, m.title as title,
            m.summary as summary, m.created_at as created_at,
            m.tags as tags
     ORDER BY m.created_at DESC
-    LIMIT $limit
+    LIMIT ${intLimit}
   `;
 
   try {
@@ -247,7 +248,6 @@ export async function generateSessionBriefing(
       project_path: project.path,
       project_name: project.name,
       cutoff: cutoffDate.toISOString(),
-      limit: maxActivities,
     });
 
     for (const record of results ?? []) {
@@ -269,13 +269,13 @@ export async function generateSessionBriefing(
   const problemsQuery = `
     MATCH (p:Memory {type: 'problem'})
     WHERE (p.context_project_path = $project_path OR p.context_project_path CONTAINS $project_name)
-      AND NOT EXISTS {
-        MATCH (p)<-[:SOLVES|ADDRESSES]-(:Memory)
-      }
+      AND NOT (p)<-[:SOLVES]-(:Memory)
+      AND NOT (p)<-[:ADDRESSES]-(:Memory)
     OPTIONAL MATCH (p)-[r]-()
+    WITH p, count(r) as related_count
     RETURN p.id as id, p.title as title, p.content as content,
            p.created_at as created_at, p.tags as tags,
-           count(r) as related_count
+           related_count
     ORDER BY p.created_at DESC
     LIMIT 5
   `;

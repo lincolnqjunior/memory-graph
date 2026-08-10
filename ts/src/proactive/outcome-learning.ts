@@ -75,7 +75,7 @@ export async function recordOutcome(
         success: $success,
         description: $description,
         context: $context,
-        timestamp: datetime($timestamp),
+        timestamp: $timestamp,
         impact: $impact
     })
     CREATE (m)-[:RESULTED_IN]->(o)
@@ -168,7 +168,7 @@ async function updateMemoryEffectiveness(
       SET m.effectiveness = $effectiveness,
           m.confidence = $confidence,
           m.usage_count = $usage_count + 1,
-          m.last_accessed = datetime($timestamp)
+          m.last_accessed = $timestamp
       RETURN m.effectiveness as effectiveness
     `;
 
@@ -211,7 +211,8 @@ async function propagateToPatterns(
 
   const patternQuery = `
     MATCH (m:Memory {id: $memory_id})
-    MATCH (m)-[:DERIVED_FROM|USES|APPLIES]->(p:Memory {type: 'code_pattern'})
+    MATCH (m)-[r]->(p:Memory {type: 'code_pattern'})
+    WHERE type(r) IN ['DERIVED_FROM', 'USES', 'APPLIES']
     RETURN p.id as pattern_id, p.effectiveness as effectiveness
   `;
 
@@ -252,7 +253,8 @@ export async function updatePatternEffectiveness(
 
   const statsQuery = `
     MATCH (p:Memory {id: $pattern_id, type: 'code_pattern'})
-    OPTIONAL MATCH (p)-[:DERIVED_FROM|USES|APPLIES]-(m:Memory)-[:RESULTED_IN]->(o:Outcome)
+    OPTIONAL MATCH (p)-[r]-(m:Memory)-[:RESULTED_IN]->(o:Outcome)
+    WHERE type(r) IN ['DERIVED_FROM', 'USES', 'APPLIES']
     RETURN p.effectiveness as current_effectiveness,
            p.confidence as current_confidence,
            p.usage_count as usage_count,
@@ -291,7 +293,7 @@ export async function updatePatternEffectiveness(
       SET p.effectiveness = $effectiveness,
           p.confidence = $confidence,
           p.usage_count = p.usage_count + 1,
-          p.last_accessed = datetime($timestamp)
+          p.last_accessed = $timestamp
       RETURN p.effectiveness as effectiveness
     `;
 

@@ -77,7 +77,8 @@ export async function predictNeeds(
     const entityQuery = `
       MATCH (m:Memory)-[:MENTIONS]->(e:Entity {text: $entity_text})
       WHERE m.type IN ['solution', 'code_pattern', 'fix']
-      OPTIONAL MATCH (m)-[r:EFFECTIVE_FOR|SOLVES|ADDRESSES]->()
+      OPTIONAL MATCH (m)-[r]->()
+      WHERE type(r) IN ['EFFECTIVE_FOR', 'SOLVES', 'ADDRESSES']
       RETURN m.id as id, m.type as type, m.title as title,
              m.content as content, m.tags as tags,
              m.effectiveness as effectiveness,
@@ -250,7 +251,8 @@ export async function warnPotentialIssues(
     const problemQuery = `
       MATCH (p:Memory {type: 'problem'})
       WHERE any(keyword IN $keywords WHERE p.content CONTAINS keyword)
-      OPTIONAL MATCH (p)-[:SOLVES|ADDRESSES]-(s:Memory {type: 'solution'})
+      OPTIONAL MATCH (p)-[r]-(s:Memory {type: 'solution'})
+      WHERE type(r) IN ['SOLVES', 'ADDRESSES']
       RETURN p.id as problem_id, p.title as problem_title,
              p.content as problem_content, p.tags as tags,
              collect(s.id) as solution_ids,
@@ -324,6 +326,8 @@ export async function suggestRelatedContext(
 ): Promise<Suggestion[]> {
   console.info(`Suggesting related context for memory ${memoryId}`);
 
+  const intLimit = Math.max(0, Math.floor(Number(maxSuggestions) || 5));
+
   const relatedQuery = `
     MATCH (m:Memory {id: $memory_id})-[r]->(related:Memory)
     WHERE r.strength >= 0.5
@@ -334,7 +338,7 @@ export async function suggestRelatedContext(
            related.effectiveness as effectiveness,
            type(r) as rel_type, r.strength as strength
     ORDER BY r.strength DESC
-    LIMIT $limit
+    LIMIT ${intLimit}
   `;
 
   const suggestions: Suggestion[] = [];
@@ -342,7 +346,6 @@ export async function suggestRelatedContext(
   try {
     const results = await backend.executeQuery(relatedQuery, {
       memory_id: memoryId,
-      limit: maxSuggestions,
     });
 
     const reasons: Record<string, string> = {
