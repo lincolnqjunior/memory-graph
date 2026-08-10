@@ -164,6 +164,61 @@ describe("getContext", () => {
     expect(result.error).toBeUndefined();
     expect(result.source_memories.length).toBe(0);
   });
+
+  test("rank-then-limit: an older strongly-matching memory survives >20 matches (P1 regression)", async () => {
+    // Seed 25 recent noise memories that match ONE query keyword ("filler"),
+    // plus one older memory that matches SIX keywords. With the recency-decay
+    // formula relevance = raw/(1+age_days/30), the old memory (raw 12, age 60
+    // → 4.0) outranks fresh noise (raw 2 → ~2.0). The port must rank ALL
+    // matches then take top-20 (original semantics), so the old high-relevance
+    // memory survives despite 25 fresher matches.
+    const noiseTag = "rank-limit-noise";
+    for (let i = 0; i < 25; i++) {
+      const rec = new Date(Date.now() - (1 + i) * 3600 * 1000).toISOString();
+      await BACKEND.executeQuery(
+        "MERGE (m:Memory {id: $id}) SET m = $props RETURN m.id as id",
+        {
+          id: `rank-noise-${i}`,
+          props: {
+            id: `rank-noise-${i}`,
+            type: "general",
+            title: `Noise memory ${i}`,
+            content: `filler auxiliary content number ${i}`,
+            tags: [noiseTag],
+            created_at: rec,
+            updated_at: rec,
+          },
+        },
+        true
+      );
+    }
+    const oldId = "rank-old-strong";
+    const oldIso = new Date(Date.now() - 60 * 86400000).toISOString();
+    await BACKEND.executeQuery(
+      "MERGE (m:Memory {id: $id}) SET m = $props RETURN m.id as id",
+      {
+        id: oldId,
+        props: {
+          id: oldId,
+          type: "general",
+          title: "Old strong memory",
+          content: "filler zebra survivor alpha beta gamma",
+          tags: [noiseTag],
+          created_at: oldIso,
+          updated_at: oldIso,
+        },
+      },
+      true
+    );
+
+    const result = await getContext(BACKEND, "filler zebra survivor alpha beta gamma", 4000, null);
+    expect(result.error).toBeUndefined();
+    const ids = new Set(result.source_memories.map((sm) => sm.id));
+    // The old 6-keyword memory must rank above the 25 fresh 1-keyword
+    // memories (relevance 4.0 vs ~2.0) and appear in the top-20.
+    expect(ids.has(oldId)).toBe(true);
+    expect(result.source_memories.length).toBeGreaterThan(0);
+  });
 });
 
 describe("getProjectContext", () => {
@@ -185,7 +240,9 @@ describe("getSessionContext", () => {
     const ids = new Set(result.recent_memories.map((m) => m["id"]));
     expect(ids.has(SOLUTION_BETA)).toBe(true);
     expect(ids.has(PROBLEM_ALPHA)).toBe(false);
-    expect(result.total_count).toBe(5);
+    // Membership-based (the rank-then-limit test seeds recent noise earlier
+    // in the file, so an exact count is not stable).
+    expect(result.total_count).toBeGreaterThanOrEqual(1);
   });
 });
 

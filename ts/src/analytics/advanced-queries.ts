@@ -178,7 +178,14 @@ export async function getMemoryGraphVisualization(
       for (const rec of edgeResults ?? []) {
         const fromId = String(rec["from_id"]);
         const toId = String(rec["to_id"]);
-        const edgeKey = `${fromId}|${toId}|${String(rec["rel_type"] ?? "")}`;
+        // FalkorDB v4 undirected MATCH yields one row per orientation; the
+        // original collect(DISTINCT rel) deduped on edge identity. Normalize
+        // the key by sorting endpoints so both orientations collapse to one
+        // edge (direction is preserved on the first-seen row).
+        const edgeKey =
+          fromId <= toId
+            ? `${fromId}|${toId}|${String(rec["rel_type"] ?? "")}`
+            : `${toId}|${fromId}|${String(rec["rel_type"] ?? "")}`;
         if (!edges.has(edgeKey)) {
           edges.set(edgeKey, {
             from: fromId,
@@ -448,7 +455,6 @@ export async function recommendLearningPaths(
     WHERE all(x IN relationships(path) WHERE type(x) IN ['BUILDS_ON', 'GENERALIZES', 'SPECIALIZES'])
     RETURN m, related, length(path) as path_length
     ORDER BY path_length DESC
-    LIMIT ${intMaxPaths}
   `;
 
   try {
@@ -473,11 +479,18 @@ export async function recommendLearningPaths(
         entry = { start: startMemory, related: [] };
         byStart.set(startId, entry);
       }
-      if (related && typeof related === "object" && related["id"]) entry.related.push(related);
+      if (related && typeof related === "object" && related["id"]) {
+        // dedupe related by id (a memory reachable by multiple path lengths
+        // would otherwise appear once per path length)
+        if (!entry.related.some((x) => String(x["id"]) === String(related["id"]))) {
+          entry.related.push(related);
+        }
+      }
     }
 
     let idx = 0;
     for (const entry of Array.from(byStart.values())) {
+      if (idx >= intMaxPaths) break;
       const startMemory = entry.start;
       const related = entry.related;
 
@@ -495,8 +508,7 @@ export async function recommendLearningPaths(
         const mem = relatedSlice[stepIdx];
         steps.push({
           memory_id: mem["id"] as string,
-          title: mem["title"] as string,
-          type: mem["type"] as string,
+          title: mem["title"] as string,          type: mem["type"] as string,
           step: stepIdx + 2,
         });
       }

@@ -93,9 +93,19 @@ describe("getMemoryGraphVisualization", () => {
     expect(nodeIds.has(VIZ_B)).toBe(true);
     expect(nodeIds.has(VIZ_C)).toBe(true);
     expect(viz.edges.length).toBeGreaterThanOrEqual(2);
-    const edgeKeys = viz.edges.map((e) => `${e.from}-${e.to}-${e.type}`);
-    expect(edgeKeys.some((k) => k.startsWith(VIZ_B) && k.includes(VIZ_A))).toBe(true);
-    expect(edgeKeys.some((k) => k.startsWith(VIZ_B) && k.includes(VIZ_C))).toBe(true);
+    // Undirected match row order is nondeterministic; assert the SOLVES and
+    // RELATED_TO edges connect the right endpoints (either orientation).
+    const hasEdge = (a: string, b: string, type: string) =>
+      viz.edges.some(
+        (e) => e.type === type && ((e.from === a && e.to === b) || (e.from === b && e.to === a))
+      );
+    expect(hasEdge(VIZ_B, VIZ_A, "SOLVES")).toBe(true);
+    expect(hasEdge(VIZ_B, VIZ_C, "RELATED_TO")).toBe(true);
+    // dedup: each seeded relationship yields exactly ONE edge (no mirror
+    // duplicates from the undirected match). The center neighborhood also
+    // includes BUILDS_ON edges to/from the learning-path seed.
+    const distinct = new Set(viz.edges.map((e) => [e.from, e.to, e.type].sort().join("|")));
+    expect(distinct.size).toBe(viz.edges.length);
   });
 
   test("isolated node with no relationships returns clean empty-adjacency result", async () => {

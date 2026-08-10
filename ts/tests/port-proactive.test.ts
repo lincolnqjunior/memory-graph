@@ -13,6 +13,9 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { FalkorDBBackend } from "../src/backends/falkordb.js";
 import { createMemory, createRelationshipProperties } from "../src/models.js";
 import {
@@ -25,6 +28,10 @@ import {
   updatePatternEffectiveness,
   calculateEffectivenessScore,
 } from "../src/proactive/outcome-learning.js";
+import {
+  generateSessionBriefing,
+  formatBriefingAsText,
+} from "../src/proactive/session-briefing.js";
 
 const BACKEND = new FalkorDBBackend({ graphName: "memorygraph_test" });
 
@@ -37,9 +44,17 @@ const SOL_PATTERN = "pat-retry-logic";
 const SOL_DECISION = "dec-auth-token";
 const ENTITY_POOL = "ent-connection-pool";
 
+// Briefing fixture: a temp project dir (detectProject reads the filesystem)
+// + memories carrying the matching context_project_path.
+let BRIEF_DIR = "";
+const BRIEF_MEM = "brief-recent-solution";
+
 beforeAll(async () => {
   await BACKEND.connect();
   await BACKEND.executeQuery("MATCH (n) DETACH DELETE n", {}, true);
+
+  BRIEF_DIR = mkdtempSync(join(tmpdir(), "mg-brief-"));
+  writeFileSync(join(BRIEF_DIR, "package.json"), JSON.stringify({ name: "brief-fixture" }));
 
   const memories = [
     createMemory({
@@ -68,6 +83,26 @@ beforeAll(async () => {
     }),
   ];
   for (const m of memories) await BACKEND.storeMemory(m);
+
+  // Briefing fixture memory: context_project_path must equal the temp dir
+  // (detectProject resolves project.path to the absolute directory).
+  await BACKEND.executeQuery(
+    "MERGE (m:Memory {id: $id}) SET m = $props RETURN m.id as id",
+    {
+      id: BRIEF_MEM,
+      props: {
+        id: BRIEF_MEM,
+        type: "solution",
+        title: "Briefing recent solution",
+        content: "recent work for the briefing fixture",
+        tags: ["briefing"],
+        created_at: RECENT_ISO,
+        updated_at: RECENT_ISO,
+        context_project_path: BRIEF_DIR,
+      },
+    },
+    true
+  );
 
   // A decision node (not a valid MemorySchema enum type, seed directly)
   await BACKEND.executeQuery(
@@ -256,5 +291,22 @@ describe("suggestRelatedContext", () => {
     expect(suggestions.length).toBeGreaterThan(0);
     const ids = new Set(suggestions.map((s) => s.memory_id));
     expect(ids.has(SOL_PATTERN)).toBe(true);
+  });
+});
+
+describe("generateSessionBriefing", () => {
+  test("produces a full briefing with the seeded activity (no half-filled swallow)", async () => {
+    const briefing = await generateSessionBriefing(BACKEND, BRIEF_DIR, 7, 10);
+    expect(briefing).not.toBeNull();
+    const briefName = (BRIEF_DIR.split(/[\\/]/).pop() ?? "");
+    expect(briefing!.project_name).toBe(briefName);
+    expect(briefing!.total_memories).toBe(1);
+    expect(briefing!.recent_activities.length).toBe(1);
+    expect(briefing!.recent_activities[0]!.memory_id).toBe(BRIEF_MEM);
+
+    const text = formatBriefingAsText(briefing!, "standard");
+    expect(text).toContain(`# Session Briefing for ${briefName}`);
+    expect(text).toContain("Briefing recent solution");
+    expect(text).toContain("Total memories: 1");
   });
 });

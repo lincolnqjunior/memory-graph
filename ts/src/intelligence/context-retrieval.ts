@@ -97,16 +97,18 @@ export class ContextRetriever {
         )
       )
       AND ($project IS NULL OR $project IN m.tags)
-      WITH m
-      ORDER BY m.created_at DESC
-      LIMIT 20
-
       RETURN m.id as id,
              m.title as title,
              m.content as content,
              m.type as memory_type,
              m.tags as tags,
              m.created_at as created_at
+    `;
+
+    const entityMatchQuery = `
+      MATCH (m:Memory)-[:MENTIONS]->(e:Entity)
+      WHERE m.id IN $ids AND e.text IN $entities
+      RETURN m.id as memory_id, count(DISTINCT e) as entity_matches
     `;
 
     const relatedQuery = `
@@ -130,15 +132,31 @@ export class ContextRetriever {
       const results = await this.backend.executeQuery(searchQuery, params, false);
 
       // FalkorDB v4 has no duration.between; relevance ranking is computed
-      // in TS from the fetched ISO timestamps and match counts.
+      // in TS from the fetched ISO timestamps and match counts. Rank ALL
+      // matches first (preserves the original rank-then-limit semantics),
+      // then slice to the top 20.
       const nowMs = Date.now();
+
+      // Entity matches are a graph-edge count (MENTIONS), not a substring
+      // check — fetch the real counts over the candidate ids.
+      const allIds = results.map((r) => String(r["id"] ?? ""));
+      const entityMatchCounts = new Map<string, number>();
+      if (allIds.length > 0) {
+        const emResults = await this.backend.executeQuery(
+          entityMatchQuery,
+          { ids: allIds, entities: entityTexts },
+          false
+        );
+        for (const rec of emResults) {
+          entityMatchCounts.set(String(rec["memory_id"] ?? ""), Number(rec["entity_matches"] ?? 0));
+        }
+      }
+
       const ranked = results
         .map((record) => {
           const content = String(record["content"] ?? "").toLowerCase();
           const title = String(record["title"] ?? "").toLowerCase();
-          const entityMatches = entityTexts.filter((e) =>
-            content.includes(e.toLowerCase()) || title.includes(e.toLowerCase())
-          ).length;
+          const entityMatches = entityMatchCounts.get(String(record["id"] ?? "")) ?? 0;
           const keywordMatches = keywords.filter(
             (k) => content.includes(k) || title.includes(k)
           ).length;
@@ -156,7 +174,8 @@ export class ContextRetriever {
           const scoreDiff = Number(b["relevance_score"] ?? 0) - Number(a["relevance_score"] ?? 0);
           if (scoreDiff !== 0) return scoreDiff;
           return String(b["created_at"] ?? "").localeCompare(String(a["created_at"] ?? ""));
-        });
+        })
+        .slice(0, 20);
 
       const ids = ranked.map((r) => String(r["id"] ?? ""));
       const relatedByMemory = new Map<string, Record<string, unknown>[]>();
@@ -164,7 +183,7 @@ export class ContextRetriever {
         const relatedResults = await this.backend.executeQuery(relatedQuery, { ids }, false);
         for (const rec of relatedResults) {
           const memoryId = String(rec["memory_id"] ?? "");
-          const key = `${String(rec["id"] ?? "")}|${String(rec["rel_type"] ?? "")}`;
+          const key = `${String(rec["id"] ?? "")}|${String(rec["rel_type"] ?? "")}|${String(rec["rel_strength"] ?? "")}`;
           const list = relatedByMemory.get(memoryId);
           if (!list) {
             relatedByMemory.set(memoryId, [
@@ -175,7 +194,7 @@ export class ContextRetriever {
                 rel_strength: Number(rec["rel_strength"] ?? 0.5),
               },
             ]);
-          } else if (!list.some((x) => `${x["id"]}|${x["rel_type"]}` === key)) {
+          } else if (!list.some((x) => `${x["id"]}|${x["rel_type"]}|${x["rel_strength"]}` === key)) {
             list.push({
               id: rec["id"],
               title: rec["title"] ?? null,
