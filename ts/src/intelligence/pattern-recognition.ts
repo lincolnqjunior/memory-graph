@@ -60,35 +60,74 @@ export class PatternRecognizer {
     const keywords = this.extractKeywords(problem);
     if (keywords.length === 0) return [];
 
+    const intLimit = Math.max(0, Math.floor(Number(limit) || 10));
+
     const query = `
       MATCH (m:Memory {type: 'problem'})
       WHERE any(keyword IN $keywords WHERE toLower(m.content) CONTAINS keyword)
-      OPTIONAL MATCH (m)-[r:SOLVES|SOLVED_BY]-(solution:Memory)
-      WITH m, solution, r,
+      WITH m,
            size([keyword IN $keywords WHERE toLower(m.content) CONTAINS keyword]) as match_count
-      WITH m, solution, r,
-           toFloat(match_count) / toFloat(size($keywords)) as similarity
-      WHERE similarity >= $threshold
-      ORDER BY similarity DESC, m.created_at DESC
-      LIMIT $limit
+      ORDER BY match_count DESC, m.created_at DESC
+      LIMIT ${intLimit}
       RETURN m.id as problem_id,
              m.title as problem_title,
              m.content as problem_content,
              m.created_at as created_at,
-             similarity,
-             collect({
-               id: solution.id,
-               title: solution.title,
-               content: solution.content,
-               effectiveness: r.effectiveness
-             }) as solutions
+             match_count
     `;
 
-    const params = { keywords, threshold, limit };
+    const params = { keywords };
 
     try {
-      const results = await this.backend.executeQuery(query, params, false);
-      return results.map((r) => ({ ...r }));
+      const rawResults = await this.backend.executeQuery(query, params, false);
+
+      // FalkorDB v4 parser rejects `WHERE <arith-expr> ORDER BY`; similarity
+      // is a ratio of match_count to keyword count, so compute it in TS and
+      // filter by threshold here (same output contract).
+      const thresholdNum = Number(threshold) || 0.7;
+      const keywordCount = keywords.length;
+      const results = rawResults
+        .map((r) => ({
+          ...r,
+          similarity:
+            keywordCount > 0 ? Number(r["match_count"] ?? 0) / keywordCount : 0,
+        }) as Record<string, unknown>)
+        .filter((r) => Number(r["similarity"]) >= thresholdNum);
+
+      const problemIds = results.map((r) => String(r["problem_id"] ?? ""));
+      const solutionsByProblem: Record<string, Record<string, unknown>[]> = {};
+
+      if (problemIds.length > 0) {
+        const solutionQuery = `
+          MATCH (m:Memory)-[r]-(solution:Memory)
+          WHERE m.id IN $ids AND type(r) IN ['SOLVES', 'SOLVED_BY']
+          RETURN m.id as problem_id,
+                 solution.id as id,
+                 solution.title as title,
+                 solution.content as content,
+                 r.effectiveness as effectiveness
+        `;
+        const solutionResults = await this.backend.executeQuery(
+          solutionQuery,
+          { ids: problemIds },
+          false
+        );
+        for (const rec of solutionResults) {
+          const pid = String(rec["problem_id"] ?? "");
+          if (!solutionsByProblem[pid]) solutionsByProblem[pid] = [];
+          solutionsByProblem[pid]!.push({
+            id: rec["id"],
+            title: rec["title"],
+            content: rec["content"],
+            effectiveness: rec["effectiveness"],
+          });
+        }
+      }
+
+      return results.map((r) => ({
+        ...r,
+        solutions: solutionsByProblem[String(r["problem_id"] ?? "")] ?? [],
+      }));
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       console.error(`Error finding similar problems: ${message}`);
@@ -164,7 +203,7 @@ export class PatternRecognizer {
     const query = `
       MATCH (m:Memory {type: $memory_type})-[:MENTIONS]->(e1:Entity)
       MATCH (m)-[:MENTIONS]->(e2:Entity)
-      WHERE id(e1) < id(e2)
+      WHERE e1.id < e2.id
       WITH e1.text as entity1, e2.text as entity2,
            collect(m.id) as memory_ids,
            count(m) as occurrence_count
@@ -220,6 +259,7 @@ export class PatternRecognizer {
     if (entities.length === 0) return [];
 
     const entityTexts = entities.map((e) => e.text);
+    const intLimit = Math.max(0, Math.floor(Number(limit) || 5));
 
     const query = `
       UNWIND $entities as entity_text
@@ -238,10 +278,10 @@ export class PatternRecognizer {
              all_entity_texts,
              match_count
       ORDER BY match_count DESC, m.created_at DESC
-      LIMIT $limit
+      LIMIT ${intLimit * 2}
     `;
 
-    const params = { entities: entityTexts, limit: limit * 2 };
+    const params = { entities: entityTexts };
 
     try {
       const results = await this.backend.executeQuery(query, params, false);

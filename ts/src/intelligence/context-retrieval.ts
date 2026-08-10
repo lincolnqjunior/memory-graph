@@ -89,41 +89,16 @@ export class ContextRetriever {
       // Find memories matching entities or keywords
       MATCH (m:Memory)
       WHERE (
-        any(entity IN $entities WHERE
-          exists((m)-[:MENTIONS]->(:Entity {text: entity}))
-        )
+        any(entity IN $entities WHERE exists((m)-[:MENTIONS]->(:Entity {text: entity})))
         OR
         any(keyword IN $keywords WHERE
           toLower(m.content) CONTAINS keyword OR
           toLower(m.title) CONTAINS keyword
         )
       )
+      AND ($project IS NULL OR $project IN m.tags)
       WITH m
-      WHERE $project IS NULL OR $project IN m.tags
-
-      WITH m,
-        size([entity IN $entities WHERE
-              exists((m)-[:MENTIONS]->(:Entity {text: entity}))]) as entity_matches,
-        size([keyword IN $keywords WHERE
-              toLower(m.content) CONTAINS keyword OR
-              toLower(m.title) CONTAINS keyword]) as keyword_matches,
-        duration.between(m.created_at, datetime()).days as age_days
-
-      WITH m, entity_matches, keyword_matches, age_days,
-        toFloat(entity_matches * 3 + keyword_matches * 2) /
-        (1.0 + age_days / 30.0) as relevance_score
-
-      OPTIONAL MATCH (m)-[r]->(related:Memory)
-      WHERE type(r) IN ['SOLVES', 'BUILDS_ON', 'REQUIRES', 'RELATED_TO']
-      WITH m, relevance_score,
-        collect(DISTINCT {
-          id: related.id,
-          title: related.title,
-          rel_type: type(r),
-          rel_strength: coalesce(r.strength, 0.5)
-        }) as related_memories
-
-      ORDER BY relevance_score DESC, m.created_at DESC
+      ORDER BY m.created_at DESC
       LIMIT 20
 
       RETURN m.id as id,
@@ -131,11 +106,18 @@ export class ContextRetriever {
              m.content as content,
              m.type as memory_type,
              m.tags as tags,
-             m.created_at as created_at,
-             relevance_score,
-             entity_matches,
-             keyword_matches,
-             related_memories
+             m.created_at as created_at
+    `;
+
+    const relatedQuery = `
+      MATCH (m:Memory)-[r]->(related:Memory)
+      WHERE m.id IN $ids
+        AND type(r) IN ['SOLVES', 'BUILDS_ON', 'REQUIRES', 'RELATED_TO']
+      RETURN m.id as memory_id,
+             related.id as id,
+             related.title as title,
+             type(r) as rel_type,
+             coalesce(r.strength, 0.5) as rel_strength
     `;
 
     const params: Record<string, unknown> = {
@@ -147,11 +129,69 @@ export class ContextRetriever {
     try {
       const results = await this.backend.executeQuery(searchQuery, params, false);
 
+      // FalkorDB v4 has no duration.between; relevance ranking is computed
+      // in TS from the fetched ISO timestamps and match counts.
+      const nowMs = Date.now();
+      const ranked = results
+        .map((record) => {
+          const content = String(record["content"] ?? "").toLowerCase();
+          const title = String(record["title"] ?? "").toLowerCase();
+          const entityMatches = entityTexts.filter((e) =>
+            content.includes(e.toLowerCase()) || title.includes(e.toLowerCase())
+          ).length;
+          const keywordMatches = keywords.filter(
+            (k) => content.includes(k) || title.includes(k)
+          ).length;
+          const created = (record["created_at"] as string | null | undefined) ?? null;
+          const ageDays = created ? Math.max(0, (nowMs - Date.parse(created)) / 86400000) : 0;
+          const raw = entityMatches * 3 + keywordMatches * 2;
+          return {
+            ...record,
+            entity_matches: entityMatches,
+            keyword_matches: keywordMatches,
+            relevance_score: raw / (1.0 + ageDays / 30.0),
+          } as Record<string, unknown>;
+        })
+        .sort((a, b) => {
+          const scoreDiff = Number(b["relevance_score"] ?? 0) - Number(a["relevance_score"] ?? 0);
+          if (scoreDiff !== 0) return scoreDiff;
+          return String(b["created_at"] ?? "").localeCompare(String(a["created_at"] ?? ""));
+        });
+
+      const ids = ranked.map((r) => String(r["id"] ?? ""));
+      const relatedByMemory = new Map<string, Record<string, unknown>[]>();
+      if (ids.length > 0) {
+        const relatedResults = await this.backend.executeQuery(relatedQuery, { ids }, false);
+        for (const rec of relatedResults) {
+          const memoryId = String(rec["memory_id"] ?? "");
+          const key = `${String(rec["id"] ?? "")}|${String(rec["rel_type"] ?? "")}`;
+          const list = relatedByMemory.get(memoryId);
+          if (!list) {
+            relatedByMemory.set(memoryId, [
+              {
+                id: rec["id"],
+                title: rec["title"] ?? null,
+                rel_type: rec["rel_type"],
+                rel_strength: Number(rec["rel_strength"] ?? 0.5),
+              },
+            ]);
+          } else if (!list.some((x) => `${x["id"]}|${x["rel_type"]}` === key)) {
+            list.push({
+              id: rec["id"],
+              title: rec["title"] ?? null,
+              rel_type: rec["rel_type"],
+              rel_strength: Number(rec["rel_strength"] ?? 0.5),
+            });
+          }
+        }
+      }
+
       const contextParts: string[] = [];
       const sourceMemories: SourceMemory[] = [];
       let estimatedTokens = 0;
 
-      for (const record of results) {
+      for (const record of ranked) {
+        record["related_memories"] = relatedByMemory.get(String(record["id"] ?? "")) ?? [];
         const memorySummary = this.formatMemory(record);
         const memoryTokens = this.estimateTokens(memorySummary);
 
@@ -196,62 +236,69 @@ export class ContextRetriever {
     const query = `
       MATCH (m:Memory)
       WHERE $project IN m.tags
-
-      WITH m
+      RETURN m.id as id, m.title as title, m.type as type, m.created_at as created_at
       ORDER BY m.created_at DESC
-
-      WITH collect(m) as all_memories
-
-      WITH all_memories,
-        [m IN all_memories WHERE m.created_at >= datetime() - duration({days: 7})][..10] as recent,
-        [m IN all_memories WHERE m.type = 'decision'][..5] as decisions,
-        [m IN all_memories WHERE m.type = 'problem' AND
-         NOT exists((m)<-[:SOLVES]-(:Memory))][..5] as open_problems,
-        [m IN all_memories WHERE m.type = 'solution'][..5] as solutions
-
-      RETURN {
-        total_memories: size(all_memories),
-        recent_activity: [m IN recent | {
-          id: m.id,
-          title: m.title,
-          type: m.type,
-          created_at: m.created_at
-        }],
-        decisions: [m IN decisions | {
-          id: m.id,
-          title: m.title,
-          created_at: m.created_at
-        }],
-        open_problems: [m IN open_problems | {
-          id: m.id,
-          title: m.title,
-          created_at: m.created_at
-        }],
-        solutions: [m IN solutions | {
-          id: m.id,
-          title: m.title,
-          created_at: m.created_at
-        }]
-      } as project_summary
     `;
 
     const params = { project };
 
     try {
       const results = await this.backend.executeQuery(query, params, false);
-      if (results.length > 0) {
-        const summary = results[0]["project_summary"];
-        if (summary && typeof summary === "object") {
-          return summary as ProjectSummary;
-        }
+
+      // FalkorDB v4.16.3 anonymous pattern comprehensions inside list
+      // comprehensions mis-evaluate (size([(x)<-[:SOLVES]-()]) returns 1
+      // even with no matching edge); do the categorization in TS.
+      const cutoff = new Date(Date.now() - 7 * 86400000).toISOString();
+      const all = results as Record<string, unknown>[];
+      const recent = all.filter((m) => String(m["created_at"] ?? "") >= cutoff).slice(0, 10);
+      const decisions = all.filter((m) => m["type"] === "decision").slice(0, 5);
+      const solutions = all.filter((m) => m["type"] === "solution").slice(0, 5);
+      const problemIds = all
+        .filter((m) => m["type"] === "problem")
+        .map((m) => String(m["id"] ?? ""));
+
+      // Determine which problems already have a SOLVES link (top-level
+      // pattern predicate is supported; anonymous pattern comps are not).
+      const solvedIds = new Set<string>();
+      if (problemIds.length > 0) {
+        const solvedQuery = `
+          MATCH (s)-[:SOLVES]->(p:Memory)
+          WHERE p.id IN $ids
+          RETURN DISTINCT p.id as id
+        `;
+        const solvedRes = await this.backend.executeQuery(solvedQuery, { ids: problemIds }, false);
+        for (const rec of solvedRes) solvedIds.add(String(rec["id"] ?? ""));
       }
-      return {
-        total_memories: 0,
-        recent_activity: [],
-        decisions: [],
-        open_problems: [],
-        solutions: [],
+      const openProblems = all
+        .filter((m) => m["type"] === "problem" && !solvedIds.has(String(m["id"] ?? "")))
+        .slice(0, 5);
+
+      const projectSummary: ProjectSummary = {
+        total_memories: all.length,
+        recent_activity: recent.map((m) => ({
+          id: m["id"],
+          title: m["title"],
+          type: m["type"],
+          created_at: m["created_at"],
+        })),
+        decisions: decisions.map((m) => ({
+          id: m["id"],
+          title: m["title"],
+          created_at: m["created_at"],
+        })),
+        open_problems: openProblems.map((m) => ({
+          id: m["id"],
+          title: m["title"],
+          created_at: m["created_at"],
+        })),
+        solutions: solutions.map((m) => ({
+          id: m["id"],
+          title: m["title"],
+          created_at: m["created_at"],
+        })),
       };
+
+      return projectSummary;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       console.error(`Error getting project context for '${project}': ${message}`);
@@ -263,13 +310,16 @@ export class ContextRetriever {
    * Get recent session context from the last N hours.
    */
   async getSessionContext(hoursBack = 24, limit = 10): Promise<SessionContext> {
+    const cutoff = new Date(Date.now() - hoursBack * 3600000).toISOString();
+    const intLimit = Math.max(0, Math.floor(Number(limit) || 10));
+
     const query = `
       MATCH (m:Memory)
-      WHERE m.created_at >= datetime() - duration({hours: $hours_back})
+      WHERE m.created_at >= $cutoff
 
       WITH m
       ORDER BY m.created_at DESC
-      LIMIT $limit
+      LIMIT ${intLimit}
 
       OPTIONAL MATCH (m)-[:MENTIONS]->(e:Entity)
       WITH m, collect(DISTINCT e.text) as entities
@@ -283,7 +333,7 @@ export class ContextRetriever {
       ORDER BY m.created_at DESC
     `;
 
-    const params = { hours_back: hoursBack, limit };
+    const params = { cutoff };
 
     try {
       const results = await this.backend.executeQuery(query, params, false);

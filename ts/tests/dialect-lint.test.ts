@@ -38,6 +38,9 @@ describe("dialect-lint FORBIDDEN patterns", () => {
     expect(flagged("SKIP $offset")).toBe(true);
     expect(flagged("LIMIT 20")).toBe(false);
     expect(flagged("SKIP 0 LIMIT 10")).toBe(false);
+    // template interpolation renders to a literal integer — sanctioned form
+    expect(flagged("LIMIT ${intLimit}")).toBe(false);
+    expect(flagged("SKIP ${searchQuery.offset ?? 0}")).toBe(false);
   });
 
   test("flags EXISTS { } / NOT EXISTS { } subqueries", () => {

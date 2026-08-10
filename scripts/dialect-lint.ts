@@ -52,8 +52,11 @@ const FORBIDDEN: Array<[RegExp, string]> = [
   [/\bduration\.between\(/g, "duration.between()"],
   [/\b(?:NOT\s+)?EXISTS\s*\{/g, "EXISTS { } subquery"],
   [/\bcount\s*\{/g, "count { } subquery"],
-  [/\bLIMIT\s+\$/g, "parameterized LIMIT"],
-  [/\bSKIP\s+\$/g, "parameterized SKIP"],
+  // parameterized LIMIT/SKIP — `LIMIT $param` is rejected by FalkorDB v4;
+  // `LIMIT ${expr}` template interpolation renders to a literal integer and
+  // is the sanctioned form, so allow it via a negative lookahead.
+  [/\bLIMIT\s+\$(?!\{)/g, "parameterized LIMIT"],
+  [/\bSKIP\s+\$(?!\{)/g, "parameterized SKIP"],
   // pipe-relationship type lists: [r:SOLVES|SOLVED_BY] or <-[:A|B]-.
   // Matches a rel-type pipe (`:TYPE1|TYPE2`), NOT a list-comprehension
   // pipe (`[x IN list | x.prop]` which has no colon before the pipe).

@@ -175,9 +175,9 @@ export class TemporalMemory {
       WHERE e.id = $entity_id OR e.text = $entity_id
       MATCH (m:Memory)-[r:MENTIONS]->(e)
       OPTIONAL MATCH (m)-[:PREVIOUS]->(prev:Memory)
-      WITH m, e, prev,
+      WITH m, e, prev, r.confidence as mention_confidence,
            CASE WHEN prev IS NOT NULL
-                THEN exists((prev)-[:MENTIONS]->(e))
+                THEN any(x IN [prev] WHERE exists((x)-[:MENTIONS]->(e)))
                 ELSE false
            END as was_mentioned_before
       RETURN m.id as memory_id,
@@ -186,7 +186,7 @@ export class TemporalMemory {
              m.type as memory_type,
              m.created_at as created_at,
              m.updated_at as updated_at,
-             r.confidence as mention_confidence,
+             mention_confidence,
              was_mentioned_before,
              CASE WHEN m.is_current = true THEN 'current'
                   WHEN m.superseded_by IS NOT NULL THEN 'superseded'
@@ -239,19 +239,24 @@ export class TemporalMemory {
   ): Promise<string> {
     const query = `
       MATCH (current:Memory {id: $current_id})
-      CREATE (new:Memory)
-      SET new = $new_props,
-          new.id = randomUUID(),
-          new.created_at = datetime(),
-          new.updated_at = datetime(),
+      WITH current, randomUUID() as new_id
+      CREATE (new:Memory {id: new_id})
+      SET new = $new_props
+      SET new.id = new_id,
+          new.created_at = $now,
+          new.updated_at = $now,
           new.is_current = true,
           current.is_current = false,
-          current.superseded_by = new.id
-      CREATE (new)-[:PREVIOUS {superseded_at: datetime()}]->(current)
-      RETURN new.id as new_id
+          current.superseded_by = new_id
+      CREATE (new)-[:PREVIOUS {superseded_at: $now}]->(current)
+      RETURN new_id
     `;
 
-    const params = { current_id: currentMemoryId, new_props: newMemory };
+    const params = {
+      current_id: currentMemoryId,
+      new_props: newMemory,
+      now: new Date().toISOString(),
+    };
 
     try {
       const results = await this.backend.executeQuery(query, params, true);
