@@ -123,48 +123,73 @@ export async function getMemoryGraphVisualization(
     },
   };
 
-  let query: string;
-  let params: Record<string, unknown>;
+  const intMaxNodes = Math.max(0, Math.floor(Number(maxNodes) || 100));
+  const intDepth = Math.max(1, Math.min(Math.floor(Number(depth) || 2), 5));
 
-  if (centerMemoryId) {
-    query = `
-      MATCH path = (center:Memory {id: $center_id})-[*1..${depth}]-(m:Memory)
-      WITH center, m, relationships(path) as rels
-      UNWIND rels as rel
-      WITH center, m, collect(DISTINCT rel) as allRels
-      WITH collect(DISTINCT center) + collect(DISTINCT m) as memories,
-           collect(DISTINCT { id: id(rel), from_id: startNode(rel).id, to_id: endNode(rel).id, type: type(rel), strength: rel.strength }) as relationships
-      RETURN memories, relationships
-      LIMIT 1
-    `;
-    params = { center_id: centerMemoryId, depth };
-  } else {
-    const typeFilter = includeTypes ? "WHERE m.type IN $types" : "";
-    query = `
+  // Node query: center-anchored neighborhood (depth-limited) or full-graph
+  // sample. Returns memory nodes as dict rows (id/title/type/importance).
+  const nodeQuery = centerMemoryId
+    ? `
+      MATCH (center:Memory {id: $center_id})
+      RETURN center as node
+      UNION
+      MATCH (center2:Memory {id: $center_id})-[*1..${intDepth}]-(m:Memory)
+      RETURN DISTINCT m as node
+    `
+    : `
       MATCH (m:Memory)
-      ${typeFilter}
+      ${includeTypes ? "WHERE m.type IN $types" : ""}
       WITH m
-      LIMIT $max_nodes
-      OPTIONAL MATCH (m)-[r]-(other:Memory)
-      WHERE other.id IN [m2 IN collect(m) | m2.id]
-      WITH collect(DISTINCT m) as memories,
-           collect(DISTINCT { id: id(r), from_id: startNode(r).id, to_id: endNode(r).id, type: type(r), strength: r.strength }) as relationships
-      RETURN memories, relationships
+      LIMIT ${intMaxNodes}
+      RETURN m as node
     `;
-    params = { max_nodes: maxNodes };
-    if (includeTypes) {
-      params.types = includeTypes;
-    }
+
+  // Edge query: relationships among the sampled node ids.
+  const edgeQuery = `
+    MATCH (a:Memory)-[r]-(b:Memory)
+    WHERE a.id IN $ids AND b.id IN $ids
+    RETURN a.id as from_id, b.id as to_id,
+           type(r) as rel_type,
+           coalesce(r.strength, 0.5) as rel_strength
+  `;
+
+  const params: Record<string, unknown> = centerMemoryId
+    ? { center_id: centerMemoryId }
+    : {};
+  if (!centerMemoryId && includeTypes) {
+    params.types = includeTypes;
   }
 
   try {
-    const results = await backend.executeQuery(query, params);
-    if (!results || results.length === 0) {
-      return visualization;
+    const nodeResults = await backend.executeQuery(nodeQuery, params);
+
+    const memoriesById = new Map<string, Record<string, unknown>>();
+    const edges = new Map<string, GraphEdge>();
+    for (const record of nodeResults ?? []) {
+      const node = record["node"] as Record<string, unknown> | undefined;
+      if (node && typeof node === "object" && node["id"]) {
+        memoriesById.set(String(node["id"]), node);
+      }
     }
 
-    const memories = (results[0]["memories"] as Record<string, unknown>[]) ?? [];
-    const relationships = (results[0]["relationships"] as Record<string, unknown>[]) ?? [];
+    const ids = Array.from(memoriesById.keys());
+    if (ids.length > 0) {
+      const edgeResults = await backend.executeQuery(edgeQuery, { ids });
+      for (const rec of edgeResults ?? []) {
+        const fromId = String(rec["from_id"]);
+        const toId = String(rec["to_id"]);
+        const edgeKey = `${fromId}|${toId}|${String(rec["rel_type"] ?? "")}`;
+        if (!edges.has(edgeKey)) {
+          edges.set(edgeKey, {
+            from: fromId,
+            to: toId,
+            type: String(rec["rel_type"] ?? "RELATED_TO"),
+            value: (Number(rec["rel_strength"]) ?? 0.5) * 5,
+            title: null,
+          });
+        }
+      }
+    }
 
     const typeGroups: Record<string, number> = {
       problem: 0,
@@ -174,7 +199,7 @@ export async function getMemoryGraphVisualization(
       project: 4,
     };
 
-    for (const mem of memories.slice(0, maxNodes)) {
+    for (const mem of Array.from(memoriesById.values()).slice(0, intMaxNodes)) {
       const memType = (mem["type"] as string) ?? "general";
       const title = (mem["title"] as string) ?? "Untitled";
       visualization.nodes.push({
@@ -187,14 +212,14 @@ export async function getMemoryGraphVisualization(
       });
     }
 
-    for (const rel of relationships) {
-      const relType = (rel["type"] as string) ?? "RELATED_TO";
-      const strength = (rel["strength"] as number) ?? 0.5;
+    for (const rel of Array.from(edges.values())) {
+      const relType = rel.type;
+      const strength = rel.value / 5;
       visualization.edges.push({
-        from: rel["from_id"] as string,
-        to: rel["to_id"] as string,
+        from: rel.from,
+        to: rel.to,
         type: relType,
-        value: strength * 5,
+        value: rel.value,
         title: `${relType} (strength: ${strength.toFixed(2)})`,
       });
     }
@@ -410,6 +435,8 @@ export async function recommendLearningPaths(
 ): Promise<LearningPath[]> {
   console.info(`Recommending learning paths for topic: ${topic}`);
 
+  const intMaxPaths = Math.max(0, Math.floor(Number(maxPaths) || 3));
+
   const topicQuery = `
     MATCH (m:Memory)
     WHERE m.content CONTAINS $topic
@@ -417,26 +444,42 @@ export async function recommendLearningPaths(
        OR m.title CONTAINS $topic
     WITH m
     LIMIT 20
-    MATCH path = (m)-[:BUILDS_ON|GENERALIZES|SPECIALIZES*1..3]-(related:Memory)
-    RETURN m, collect(DISTINCT related) as related_memories,
-           length(path) as path_length
+    MATCH path = (m)-[*1..3]-(related:Memory)
+    WHERE all(x IN relationships(path) WHERE type(x) IN ['BUILDS_ON', 'GENERALIZES', 'SPECIALIZES'])
+    RETURN m, related, length(path) as path_length
     ORDER BY path_length DESC
-    LIMIT $max_paths
+    LIMIT ${intMaxPaths}
   `;
 
   try {
     const results = await backend.executeQuery(topicQuery, {
       topic,
       topic_lower: topic.toLowerCase(),
-      max_paths: maxPaths,
     });
 
     const paths: LearningPath[] = [];
 
-    for (let idx = 0; idx < (results ?? []).length; idx++) {
-      const record = results[idx];
+    // The query returns one row per (m, related) pair; aggregate related
+    // memories per start memory in TS (FalkorDB v4 rejects collect({...})
+    // nested in another aggregation).
+    const byStart = new Map<string, { start: Record<string, unknown>; related: Record<string, unknown>[] }>();
+    for (const record of results ?? []) {
       const startMemory = record["m"] as Record<string, unknown>;
-      const related = (record["related_memories"] as Record<string, unknown>[]) ?? [];
+      const related = record["related"] as Record<string, unknown> | undefined;
+      const startId = String(startMemory?.["id"] ?? "");
+      if (!startId) continue;
+      let entry = byStart.get(startId);
+      if (!entry) {
+        entry = { start: startMemory, related: [] };
+        byStart.set(startId, entry);
+      }
+      if (related && typeof related === "object" && related["id"]) entry.related.push(related);
+    }
+
+    let idx = 0;
+    for (const entry of Array.from(byStart.values())) {
+      const startMemory = entry.start;
+      const related = entry.related;
 
       const steps: Array<Record<string, string | number>> = [
         {
@@ -465,8 +508,9 @@ export async function recommendLearningPaths(
       );
       const avgEffectiveness = totalEffectiveness / steps.length;
 
+      idx += 1;
       paths.push({
-        path_id: `path_${idx + 1}`,
+        path_id: `path_${idx}`,
         topic,
         steps,
         total_memories: steps.length,
@@ -507,9 +551,8 @@ export async function identifyKnowledgeGaps(
   // Find problems without solutions
   let unsolvedQuery = `
     MATCH (p:Memory {type: 'problem'})
-    WHERE NOT EXISTS {
-      MATCH (p)<-[:SOLVES|ADDRESSES]-(:Memory)
-    }
+    WHERE NOT (p)<-[:SOLVES]-(:Memory)
+      AND NOT (p)<-[:ADDRESSES]-(:Memory)
   `;
   if (project) {
     unsolvedQuery += "AND (p.context CONTAINS $project)\n";
