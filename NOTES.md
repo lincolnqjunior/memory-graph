@@ -5,7 +5,7 @@ This clone carries an **intentional local divergence** from upstream
 modern FalkorDB server (v4.x, Redis 8.6.3). These are working-tree edits; do
 not push them upstream.
 
-## Divergence (2 lines in `ts/src/backends/falkordb-shared.ts`)
+## Divergence (6 edits in `ts/src/backends/falkordb-shared.ts`)
 
 1. **`executeQuery` — param wrapping.**
    Upstream: `this.graph.query(query, params)`
@@ -64,9 +64,67 @@ not push them upstream.
 
 ## Re-apply reminder
 
-After `git pull` / `git reset --hard` / `git clean`, re-apply the two edits above.
-The divergence is deliberately kept to these two lines to make re-application
-trivial and conflict resolution predictable.
+After `git pull` / `git reset --hard` / `git clean`, re-apply the **six
+divergences** above in `ts/src/backends/falkordb-shared.ts` (items 1–6). The
+header "Divergence (2 lines...)" is stale — all six are live fork edits;
+re-applying only the first two silently breaks `link` without `--context`
+(item 4), relationship-typed links (item 5), and the whole related/as-of/
+history family (item 6).
+
+### Analytical-layer deviations (land inline in these files)
+
+The analytical layer was ported to the modern FalkorDB v4.x dialect (2026-08-10,
+`feat: semantic memory return` plan). Rejected upstream constructs
+(`datetime()`, `duration.between()`, `EXISTS { }`/`NOT EXISTS { }` subqueries,
+parameterized `LIMIT`/`SKIP`, pipe-relationships `<-[:A|B]-`, `id()`,
+`startNode(rel).id`) are replaced with the v4 dialect:
+
+- `datetime()` / `datetime($x)` → ISO-8601 string comparison against a
+  TS-computed cutoff (`m.created_at >= $cutoff`) — verified lexicographic
+  ordering == chronological for RFC3339 UTC strings; `timestamp()` for
+  numeric now.
+- `duration.between(a, b).days` → TS-side `Date.parse` arithmetic on the
+  fetched ISO strings.
+- `NOT EXISTS { MATCH ... }` → `NOT (n)-[:T]->(:Label)` pattern predicate
+  (verified working) or `OPTIONAL MATCH` + null check. NOTE: standalone
+  `exists((n)-[:T]->(..))` is ALSO rejected in v4.16.3 ("Unable to resolve
+  filtered alias"); the working form is `any(x IN [...] WHERE
+  exists((n)-[:T]->(..)))`.
+- `LIMIT $x` / `SKIP $x` → interpolated validated integers (z-validated
+  callers, same safety argument as divergence item 2).
+- Pipe-rels `[r:A|B]` / `<-[:A|B]-` → split into multiple `MATCH` + `UNION`
+  or a `WHERE type(r) IN [...]` chain.
+- `id()` / `startNode(rel).id` → memories and relationships carry an `id`
+  **property** (set by `storeMemory` / `createRelationship`); use `m.id` /
+  `r.id` instead of the internal node id.
+- `collect({...})` nested inside another aggregating query → compute in TS
+  or split into two queries (FalkorDB: "Invalid use of aggregating function
+  'collect'").
+
+`scripts/dialect-lint.ts` scans the ported files for residual rejected
+constructs (`bun run scripts/dialect-lint.ts`); run it before every port
+verification. `bun test` + `tsc --noEmit` do NOT see template-literal Cypher,
+so the lint is the only guard against regression.
+
+### Corrected command → file map
+
+The analytical surface maps to files as follows (supersedes any earlier
+6-file list):
+
+| Command | Backing file |
+|---------|--------------|
+| `context` (retrieval) | `ts/src/intelligence/context-retrieval.ts` |
+| `patterns` | `ts/src/intelligence/pattern-recognition.ts` |
+| `entities` | `ts/src/intelligence/entity-extraction.ts` |
+| `temporal` (getHistory/asOf/compare) | `ts/src/intelligence/temporal.ts` |
+| `capture` (integration) | `ts/src/integration/context-capture.ts` |
+| `briefing` | `ts/src/proactive/session-briefing.ts` |
+| `predict` / `warn` | `ts/src/proactive/predictive.ts` |
+| `outcome` / `learning` | `ts/src/proactive/outcome-learning.ts` |
+| `visualize` / `similarity` / `learning` / `gaps` | `ts/src/analytics/advanced-queries.ts` |
+
+Port verification runs against the dedicated **`memorygraph_test`** graph
+(never the live `memorygraph` store); see `ts/tests/port-*.test.ts`.
 
 ## Context
 
@@ -74,6 +132,7 @@ Applied 2026-08-05 as part of the `desktop-link` plan
 `docs/plans/2026-08-05-002-feat-memorygraph-falkordb-docker-plan.md`. The scribe
 (`@escriba`) runs the FalkorDB backend via this fork against a Dockerized
 FalkorDB v4.16.3 (`~/source/memorygraph-docker/docker-compose.yml`). The
-analytical layer (`visualize`/`briefing`/`similarity`/`patterns`) is **not**
-ported to the modern dialect — those commands remain broken on a server
-backend and are out of scope (follow-up maintenance on this fork).
+analytical layer (`visualize`/`briefing`/`similarity`/`patterns`) was ported to
+the modern dialect on 2026-08-10 (`feat: semantic memory return` plan) — see
+"Analytical-layer deviations" above; those commands are now content-correct
+against FalkorDB v4.
