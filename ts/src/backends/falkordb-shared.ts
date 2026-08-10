@@ -41,6 +41,25 @@ function validateRelType(relType: string): void {
   }
 }
 
+/**
+ * Recursively drop `undefined` values from a params tree. falkordb-ts 6.6.2
+ * throws "Unexpected param type undefined" if any map value is `undefined`
+ * (e.g. a relationship's optional `context`), so prune them before encoding.
+ */
+function pruneUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((v) => pruneUndefined(v));
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) out[key] = pruneUndefined(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 export abstract class BaseFalkorDBBackend implements GraphBackend {
   abstract _display_name: string;
 
@@ -101,7 +120,7 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
     const params = parameters ?? {};
 
     try {
-      const result = await this.graph.query(query, params);
+      const result = await this.graph.query(query, { params: pruneUndefined(params) });
       return this.convertFalkorDBResult(result);
     } catch (err) {
       console.error(`Query execution failed: ${err}`);
@@ -128,8 +147,13 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
 
     for (const row of resultSet) {
       if (row && typeof row === "object" && !Array.isArray(row)) {
-        // Already a dict-like object
-        resultList.push(this.convertFalkorDBValue(row));
+        // Already a dict-like object; unwrap node/relationship values per key
+        // (falkordb-ts 6.6.2 returns rows keyed by alias with no header)
+        const record: Record<string, unknown> = {};
+        for (const key of Object.keys(row)) {
+          record[key] = this.convertFalkorDBValue(row[key]);
+        }
+        resultList.push(record);
       } else if (Array.isArray(row) && columnNames.length > 0) {
         const record: Record<string, unknown> = {};
         for (let i = 0; i < row.length && i < columnNames.length; i++) {
@@ -295,11 +319,9 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
         WHERE ${whereClause}
         RETURN m
         ORDER BY m.importance DESC, m.created_at DESC
-        LIMIT $limit
-        SKIP $offset
+        SKIP ${searchQuery.offset ?? 0}
+        LIMIT ${searchQuery.limit}
       `;
-      parameters["limit"] = searchQuery.limit;
-      parameters["offset"] = searchQuery.offset ?? 0;
 
       const result = await this.executeQuery(query, parameters, false);
       const memories: Memory[] = [];
@@ -394,7 +416,8 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
         MATCH (from:Memory {id: $from_id})
         MATCH (to {id: $to_id})
         WHERE to:Memory OR to:Entity
-        CREATE (from)-[r:${relationshipType} $properties]->(to)
+        CREATE (from)-[r:${relationshipType}]->(to)
+        SET r = $properties
         RETURN r.id as id
       `;
 
@@ -439,7 +462,7 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
         MATCH (start:Memory {id: $memory_id})
         MATCH (start)-[r${relFilter}*1..${maxDepth}]-(related:Memory)
         WHERE related.id <> start.id
-        WITH DISTINCT related, r[0] as rel
+        WITH DISTINCT related, relationships(r)[0] as rel
         RETURN related,
                type(rel) as rel_type,
                properties(rel) as rel_props
