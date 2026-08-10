@@ -126,6 +126,26 @@ The analytical surface maps to files as follows (supersedes any earlier
 Port verification runs against the dedicated **`memorygraph_test`** graph
 (never the live `memorygraph` store); see `ts/tests/port-*.test.ts`.
 
+## Known residuals (accepted after 2026-08-10 code review, follow-up queue)
+
+- **Lint scope gap:** the dialect lint guards only the 9 ported analytical
+  files. `ts/src/integration/workflow-tracking.ts` (`datetime()` ~L145,
+  `NOT EXISTS {` ~L500) and `ts/src/integration/project-analysis.ts`
+  (`datetime()` ~L305, ~L532) still carry rejected constructs and are wired to
+  the `analyze-project` / `workflow` CLI commands — they fail against v4.16.3
+  and silently exit 0 (the executeQuery wrapper). Extend the port + lint scope
+  to these two files as a follow-up.
+- **patterns renderer:** `ts/src/cli.ts` `cmdPatterns` reads `s['title']`/`s['id']`
+  but `findSimilarProblems` returns `problem_title`/`problem_id`, so the CLI
+  prints "Unknown (similarity: X)". Pre-existing (unchanged by the port); fix
+  the renderer in a follow-up.
+- **FalkorDB undirected-match semantics:** `MATCH (a)-[r]-(b)` yields one row
+  per orientation. The port dedups on sorted endpoints (visualize) — audit any
+  future undirected pattern against this.
+- **Schema-init stderr noise** ("Attribute 'x' is already indexed" / "Invalid
+  constraint command") on every CLI call is a known degradation; assert on
+  stdout content, not stderr.
+
 ## Context
 
 Applied 2026-08-05 as part of the `desktop-link` plan
