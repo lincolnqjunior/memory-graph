@@ -1,0 +1,27 @@
+#!/usr/bin/env bun
+/**
+ * Pre-commit: FalkorDB v4 dialect lint.
+ *
+ * The dialect lint is the ONLY guard against rejected Cypher constructs in
+ * template-literal strings (tsc/bun test have blind spots). Fail the commit
+ * if any ported analytical-layer file regresses to a v4-rejected construct.
+ */
+
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+
+const ROOT = resolve(import.meta.dir, "..", "..");
+const { status, stderr } = spawnSync(
+  "bun",
+  ["run", "scripts/dialect-lint.ts"],
+  { cwd: ROOT, stdio: ["ignore", "inherit", "pipe"], encoding: "utf8" }
+);
+
+if (status !== 0) {
+  process.stderr.write(
+    `\ndialect-lint: FAILED — ported files carry FalkorDB v4-rejected Cypher.\n` +
+      `${(stderr ?? "").trimEnd()}\n\n` +
+      `Fix before committing, or run \`bun run scripts/dialect-lint.ts\` locally.\n`
+  );
+  process.exit(1);
+}

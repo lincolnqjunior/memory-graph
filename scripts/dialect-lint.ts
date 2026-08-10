@@ -41,6 +41,8 @@ const PORTED_FILES = [
   "proactive/outcome-learning.ts",
   "analytics/advanced-queries.ts",
   "integration/context-capture.ts",
+  "integration/workflow-tracking.ts",
+  "integration/project-analysis.ts",
 ];
 
 /**

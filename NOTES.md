@@ -128,13 +128,16 @@ Port verification runs against the dedicated **`memorygraph_test`** graph
 
 ## Known residuals (accepted after 2026-08-10 code review, follow-up queue)
 
-- **Lint scope gap:** the dialect lint guards only the 9 ported analytical
+- ~~**Lint scope gap:** the dialect lint guards only the 9 ported analytical
   files. `ts/src/integration/workflow-tracking.ts` (`datetime()` ~L145,
   `NOT EXISTS {` ~L500) and `ts/src/integration/project-analysis.ts`
   (`datetime()` ~L305, ~L532) still carry rejected constructs and are wired to
   the `analyze-project` / `workflow` CLI commands — they fail against v4.16.3
   and silently exit 0 (the executeQuery wrapper). Extend the port + lint scope
-  to these two files as a follow-up.
+  to these two files as a follow-up.~~ **RESOLVED (2026-08-10, quick win):** both
+  files ported (`datetime()` → `$now` param, `NOT EXISTS { }` → `NOT (e)<-[:SOLVES]-(:Memory)`
+  pattern predicate) and added to `PORTED_FILES` (11 files now linted). A
+  pre-commit hook runs the lint (`scripts/hooks/pre-commit` + `scripts/install-hooks.sh`).
 - **patterns renderer:** `ts/src/cli.ts` `cmdPatterns` reads `s['title']`/`s['id']`
   but `findSimilarProblems` returns `problem_title`/`problem_id`, so the CLI
   prints "Unknown (similarity: X)". Pre-existing (unchanged by the port); fix
