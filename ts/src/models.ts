@@ -78,6 +78,8 @@ export const RelationshipType = {
   PREFERRED_OVER: "PREFERRED_OVER",
   DEPRECATED_BY: "DEPRECATED_BY",
   VALIDATED_BY: "VALIDATED_BY",
+  TOUCHED: "TOUCHED",
+  DERIVED_FROM: "DERIVED_FROM",
 } as const;
 
 export type RelationshipType = (typeof RelationshipType)[keyof typeof RelationshipType];

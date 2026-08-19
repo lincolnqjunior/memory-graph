@@ -18,6 +18,7 @@ import { handleStoreMemory, handleGetMemory, handleUpdateMemory, handleDeleteMem
 import { handleSearchMemories, handleRecallMemories, handleContextualSearch } from "./tools/search.js";
 import { handleCreateRelationship, handleGetRelatedMemories } from "./tools/relationship.js";
 import { handleAutoLink } from "./tools/autolink.js";
+import { handleConsolidate } from "./tools/consolidate.js";
 import { buildObservabilityClassifier, type Classifier } from "./intelligence/observability.js";
 import {
   handleGetMemoryStatistics,
@@ -315,6 +316,9 @@ export async function main(): Promise<void> {
         break;
       case "autolink":
         await cmdAutolink(commandArgs);
+        break;
+      case "consolidate":
+        await cmdConsolidate(commandArgs);
         break;
       case "stats":
         await cmdStats(commandArgs);
@@ -691,6 +695,29 @@ async function cmdAutolink(args: string[]): Promise<void> {
     };
 
     const result = await handleAutoLink(db, toolArgs);
+    console.log(result.text);
+    if (result.isError) throw new ExitError(1);
+  } finally {
+    await close();
+  }
+}
+
+async function cmdConsolidate(args: string[]): Promise<void> {
+  const parsed = parseSimpleArgs(args);
+
+  const { db, close } = await createDb();
+  try {
+    const toolArgs: Record<string, unknown> = {
+      tag: parsed["tag"] ?? undefined,
+      memory_id: parsed["memory-id"] ?? undefined,
+      superseded_age_days: parseIntArg(parsed["superseded-age-days"]) ?? undefined,
+      superseded_importance_max: parseFloatArg(parsed["superseded-importance-max"]) ?? undefined,
+      archive_age_days: parseIntArg(parsed["archive-age-days"]) ?? undefined,
+      archive_importance_max: parseFloatArg(parsed["archive-importance-max"]) ?? undefined,
+      out_path: parsed["out"] ?? undefined,
+    };
+
+    const result = await handleConsolidate(db, toolArgs);
     console.log(result.text);
     if (result.isError) throw new ExitError(1);
   } finally {
