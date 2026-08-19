@@ -110,6 +110,7 @@ export abstract class BaseBoltBackend implements GraphBackend {
   password?: string;
   driver: any = null;
   _connected = false;
+  _schemaInitialized = false;
 
   constructor(uri: string, username?: string, password?: string) {
     this.uri = uri;
@@ -214,6 +215,8 @@ export abstract class BaseBoltBackend implements GraphBackend {
   // -----------------------------------------------------------------------
 
   async initializeSchema(): Promise<void> {
+    if (this._schemaInitialized) return;
+    this._schemaInitialized = true;
     console.log(`Initializing ${this._display_name} schema...`);
 
     const indexes = [
@@ -233,12 +236,20 @@ export abstract class BaseBoltBackend implements GraphBackend {
       );
     }
 
-    for (const index of indexes) {
-      try {
-        await this.executeQuery(index, {}, true);
-      } catch {
-        // Index may already exist
+    // Suppress executeQuery's console.error locally: it logs before throwing
+    // on rerun, and we don't want 'already indexed' noise on every command.
+    const origConsoleError = console.error;
+    console.error = () => {};
+    try {
+      for (const index of indexes) {
+        try {
+          await this.executeQuery(index, {}, true);
+        } catch {
+          // Index may already exist.
+        }
       }
+    } finally {
+      console.error = origConsoleError;
     }
 
     console.log("Schema initialization completed");

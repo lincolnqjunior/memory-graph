@@ -118,26 +118,26 @@ describe("MemgraphBackend", () => {
 });
 
 describe("BackendFactory integration", () => {
-  test("factory registers falkordb in backend names", () => {
+  test("factory registers falkordb in backend names", async () => {
     // The factory should accept "falkordb" as a valid backend type.
-    // It will try to connect, but we just verify the dispatch doesn't
-    // throw an "unknown backend" error (connection errors are expected
-    // without a running server).
+    // Connection may succeed (FalkorDB up) or throw DatabaseConnectionError.
+    // We just verify dispatch doesn't say "Unknown backend" — and we MUST
+    // await so any rejection becomes a caught test failure rather than an
+    // unhandled rejection that bleeds into subsequent test files.
     try {
-      BackendFactory.createBackendByType("falkordb");
+      await BackendFactory.createBackendByType("falkordb");
     } catch (err) {
-      // Connection errors are fine - we just want to verify it's not
-      // an "unknown backend" error
       expect(String(err)).not.toContain("Unknown backend");
     }
   });
 
-  test("factory registers memgraph in backend names", () => {
+  test("factory registers memgraph in backend names", async () => {
+    // Same rationale as the falkordb test — must await so the inevitable
+    // DatabaseConnectionError (Memgraph isn't running locally) doesn't
+    // escape as an unhandled rejection and fail subsequent test files.
     try {
-      BackendFactory.createBackendByType("memgraph");
+      await BackendFactory.createBackendByType("memgraph");
     } catch (err) {
-      // Connection errors are fine - we just want to verify it's not
-      // an "unknown backend" error
       expect(String(err)).not.toContain("Unknown backend");
     }
   });

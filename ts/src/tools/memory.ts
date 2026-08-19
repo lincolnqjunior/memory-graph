@@ -63,6 +63,7 @@ export const handleGetMemory = handleToolErrors(
     text += `Type: ${memory.type}\n`;
     text += `Created: ${memory.created_at}\n`;
     text += `Importance: ${memory.importance}\n`;
+    text += `Confidence: ${memory.confidence}\n`;
     text += `Tags: ${memory.tags.length > 0 ? memory.tags.join(", ") : "None"}\n\n`;
     text += `**Content:**\n${memory.content}`;
 

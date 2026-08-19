@@ -67,6 +67,7 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
   client: any = null;
   graph: any = null;
   _connected = false;
+  _schemaInitialized = false;
 
   constructor(graphName = "memorygraph") {
     this.graphName = graphName;
@@ -180,6 +181,8 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
   // -----------------------------------------------------------------------
 
   async initializeSchema(): Promise<void> {
+    if (this._schemaInitialized) return;
+    this._schemaInitialized = true;
     console.log(`Initializing ${this._display_name} schema...`);
 
     const constraints = [
@@ -211,12 +214,20 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
       }
     }
 
-    for (const index of indexes) {
-      try {
-        await this.executeQuery(index, {}, true);
-      } catch (err) {
-        // Index may already exist
+    // Suppress executeQuery's console.error locally: it logs before throwing
+    // on rerun, and we don't want 'already indexed' noise on every command.
+    const origConsoleError = console.error;
+    console.error = () => {};
+    try {
+      for (const index of indexes) {
+        try {
+          await this.executeQuery(index, {}, true);
+        } catch {
+          // Index may already exist.
+        }
       }
+    } finally {
+      console.error = origConsoleError;
     }
 
     console.log("Schema initialization completed");
@@ -460,9 +471,9 @@ export abstract class BaseFalkorDBBackend implements GraphBackend {
 
       const query = `
         MATCH (start:Memory {id: $memory_id})
-        MATCH (start)-[r${relFilter}*1..${maxDepth}]-(related:Memory)
+        MATCH (start)-[r${relFilter}${maxDepth === 1 ? "" : `*1..${maxDepth}`}]-(related:Memory)
         WHERE related.id <> start.id
-        WITH DISTINCT related, relationships(r)[0] as rel
+        WITH DISTINCT related, ${maxDepth === 1 ? "r" : "relationships(r)[0]"} as rel
         RETURN related,
                type(rel) as rel_type,
                properties(rel) as rel_props
