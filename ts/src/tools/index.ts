@@ -8,3 +8,4 @@ export * from "./search.js";
 export * from "./relationship.js";
 export * from "./activity.js";
 export * from "./temporal.js";
+export * from "./autolink.js";

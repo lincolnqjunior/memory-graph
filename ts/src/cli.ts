@@ -17,6 +17,7 @@ import { CloudRESTAdapter } from "./backends/cloud.js";
 import { handleStoreMemory, handleGetMemory, handleUpdateMemory, handleDeleteMemory } from "./tools/memory.js";
 import { handleSearchMemories, handleRecallMemories, handleContextualSearch } from "./tools/search.js";
 import { handleCreateRelationship, handleGetRelatedMemories } from "./tools/relationship.js";
+import { handleAutoLink } from "./tools/autolink.js";
 import {
   handleGetMemoryStatistics,
   handleGetRecentActivity,
@@ -310,6 +311,9 @@ export async function main(): Promise<void> {
         break;
       case "link":
         await cmdLink(commandArgs);
+        break;
+      case "autolink":
+        await cmdAutolink(commandArgs);
         break;
       case "stats":
         await cmdStats(commandArgs);
@@ -635,6 +639,34 @@ async function cmdLink(args: string[]): Promise<void> {
     };
 
     const result = await handleCreateRelationship(db, toolArgs);
+    console.log(result.text);
+    if (result.isError) throw new ExitError(1);
+  } finally {
+    await close();
+  }
+}
+
+async function cmdAutolink(args: string[]): Promise<void> {
+  const parsed = parseSimpleArgs(args);
+
+  const minConfidence = parseFloatArg(parsed["min-confidence"]);
+  if (minConfidence !== undefined && (minConfidence < 0 || minConfidence > 1)) {
+    console.error("--min-confidence must be in [0, 1].");
+    process.exit(1);
+  }
+
+  const { db, close } = await createDb();
+  try {
+    const toolArgs: Record<string, unknown> = {
+      tag: parsed["tag"] ?? undefined,
+      memory_id: parsed["memory-id"] ?? undefined,
+      min_confidence: minConfidence ?? 0.7,
+      apply: parsed["apply"] !== undefined,
+      rules: parsed["rules"] ?? undefined,
+      types: parsed["types"] ?? undefined,
+    };
+
+    const result = await handleAutoLink(db, toolArgs);
     console.log(result.text);
     if (result.isError) throw new ExitError(1);
   } finally {
