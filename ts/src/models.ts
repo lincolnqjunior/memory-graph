@@ -136,6 +136,9 @@ export const MemorySchema = z.object({
   last_accessed: z.string().datetime().or(z.date()).nullish(),
   version: z.number().int().min(1).default(1),
   updated_by: z.string().nullish(),
+  // Observability grading (#28). Optional: legacy memories parse fine
+  // without it; computed on read by buildObservabilityClassifier.
+  observability: z.enum(["exact", "estimated", "unavailable"]).optional(),
   // Enriched fields
   relationships: z.record(z.array(z.string())).nullish(),
   match_info: z.record(z.unknown()).nullish(),

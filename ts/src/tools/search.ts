@@ -2,12 +2,24 @@
  * Search tool handlers for the CLI.
  *
  * search_memories, recall_memories, contextual_search
+ *
+ * Observability prefix (#28): when `args["observability_classifier"]`
+ * is supplied, each hit is prefixed with `[observability=X]` where X is
+ * the per-memory grade computed by `buildObservabilityClassifier`.
+ * Without a classifier, the prefix is omitted (zero behaviour change
+ * for tests that don't pass one).
  */
 
 import type { IMemoryDatabase } from "../database.js";
 import type { SearchQuery, Memory } from "../models.js";
 import { validateSearchInput } from "../utils/validation.js";
 import { handleToolErrors } from "./error-handling.js";
+import type { Classifier } from "../intelligence/observability.js";
+
+function gradePrefix(mem: Memory, classifier: Classifier | undefined): string {
+  if (classifier === undefined) return "";
+  return `[observability=${classifier(mem)}] `;
+}
 
 export const handleSearchMemories = handleToolErrors(
   "search memories",
@@ -36,14 +48,15 @@ export const handleSearchMemories = handleToolErrors(
     };
 
     const memories = await db.searchMemories(searchQuery);
+    const classifier = args["observability_classifier"] as Classifier | undefined;
     if (memories.length === 0) {
       return "No memories found matching the search criteria.";
     }
 
     let text = `Found ${memories.length} memories:\n\n`;
     for (let i = 0; i < memories.length; i++) {
-      const mem = memories[i];
-      text += `**${i + 1}. ${mem.title}** (ID: ${mem.id})\n`;
+      const mem = memories[i]!;
+      text += `**${i + 1}. ${gradePrefix(mem, classifier)}${mem.title}** (ID: ${mem.id})\n`;
       text += `Type: ${mem.type} | Importance: ${mem.importance}\n`;
       text += `Tags: ${mem.tags.length > 0 ? mem.tags.join(", ") : "None"}\n`;
       if (mem.summary) text += `Summary: ${mem.summary}\n`;
@@ -81,14 +94,15 @@ export const handleRecallMemories = handleToolErrors(
     };
 
     const memories = await db.searchMemories(searchQuery);
+    const classifier = args["observability_classifier"] as Classifier | undefined;
     if (memories.length === 0) {
       return "No memories found matching your query. Try:\n- Using different search terms\n- Removing filters to broaden the search\n- Checking if memories have been stored for this topic";
     }
 
     let text = `**Found ${memories.length} relevant memories:**\n\n`;
     for (let i = 0; i < memories.length; i++) {
-      const mem = memories[i];
-      text += `**${i + 1}. ${mem.title}** (ID: ${mem.id})\n`;
+      const mem = memories[i]!;
+      text += `**${i + 1}. ${gradePrefix(mem, classifier)}${mem.title}** (ID: ${mem.id})\n`;
       text += `Type: ${mem.type} | Importance: ${mem.importance}\n`;
 
       if (mem.match_info) {
@@ -182,6 +196,7 @@ export const handleContextualSearch = handleToolErrors(
 
     const allMatches = await db.searchMemories(searchQuery);
     const contextualMatches = allMatches.filter((mem) => mem.id && relatedIds.has(mem.id));
+    const classifier = args["observability_classifier"] as Classifier | undefined;
 
     if (contextualMatches.length === 0) {
       return `No matches found for '${query}' within the context of ${memoryId}`;
@@ -194,8 +209,8 @@ export const handleContextualSearch = handleToolErrors(
     text += `Found ${contextualMatches.length} matches:\n\n`;
 
     for (let i = 0; i < contextualMatches.length; i++) {
-      const mem = contextualMatches[i];
-      text += `${i + 1}. **${mem.title}** (ID: ${mem.id})\n`;
+      const mem = contextualMatches[i]!;
+      text += `${i + 1}. **${gradePrefix(mem, classifier)}${mem.title}** (ID: ${mem.id})\n`;
       text += `   Type: ${mem.type} | Importance: ${mem.importance}\n`;
       if (mem.summary) {
         text += `   Summary: ${mem.summary}\n`;
