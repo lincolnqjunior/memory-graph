@@ -50,7 +50,7 @@ describe("RelationshipType", () => {
   });
 
   test("ALL_RELATIONSHIP_TYPES contains all types", () => {
-    expect(ALL_RELATIONSHIP_TYPES.length).toBe(35);
+    expect(ALL_RELATIONSHIP_TYPES.length).toBe(37);
   });
 });
 
