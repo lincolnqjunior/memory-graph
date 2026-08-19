@@ -9,6 +9,7 @@ import { createRelationshipProperties, isRelationshipType } from "../models.js";
 import { validateRelationshipInput } from "../utils/validation.js";
 import { extractContextStructure } from "../utils/context-extractor.js";
 import { handleToolErrors } from "./error-handling.js";
+import type { Classifier } from "../intelligence/observability.js";
 
 export const handleCreateRelationship = handleToolErrors(
   "create relationship",
@@ -61,9 +62,11 @@ export const handleGetRelatedMemories = handleToolErrors(
     }
 
     let text = `Found ${relatedMemories.length} related memories:\n\n`;
+    const classifier = args["observability_classifier"] as Classifier | undefined;
     for (let i = 0; i < relatedMemories.length; i++) {
-      const [memory, relationship] = relatedMemories[i];
-      text += `**${i + 1}. ${memory.title}** (ID: ${memory.id})\n`;
+      const [memory, relationship] = relatedMemories[i]!;
+      const prefix = classifier !== undefined ? `[observability=${classifier(memory)}] ` : "";
+      text += `**${i + 1}. ${prefix}${memory.title}** (ID: ${memory.id})\n`;
       text += `Relationship: ${relationship.type} (strength: ${relationship.properties.strength})\n`;
       text += `Type: ${memory.type} | Importance: ${memory.importance}\n\n`;
     }

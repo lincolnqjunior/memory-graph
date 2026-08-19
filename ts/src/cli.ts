@@ -18,6 +18,7 @@ import { handleStoreMemory, handleGetMemory, handleUpdateMemory, handleDeleteMem
 import { handleSearchMemories, handleRecallMemories, handleContextualSearch } from "./tools/search.js";
 import { handleCreateRelationship, handleGetRelatedMemories } from "./tools/relationship.js";
 import { handleAutoLink } from "./tools/autolink.js";
+import { buildObservabilityClassifier, type Classifier } from "./intelligence/observability.js";
 import {
   handleGetMemoryStatistics,
   handleGetRecentActivity,
@@ -456,8 +457,29 @@ async function cmdStore(args: string[]): Promise<void> {
   const parsed = parseSimpleArgs(args);
 
   if (!parsed["type"] || !parsed["title"] || !parsed["content"]) {
-    console.error("Usage: memorygraph store --type <type> --title <title> --content <content> [--tags tag1,tag2] [--importance 0.5] [--summary <summary>]");
+    console.error("Usage: memorygraph store --type <type> --title <title> --content <content> [--tags tag1,tag2] [--importance 0.5] [--summary <summary>] [--link-to id1:TYPE1,id2:TYPE2]");
     process.exit(1);
+  }
+
+  // Parse --link-to: comma-separated list of "<memory-id>:<REL_TYPE>" pairs.
+  // Opt-in: when omitted, behavior is unchanged (no edges added). When present,
+  // every target is validated (memory exists, type is from ALL_RELATIONSHIP_TYPES).
+  const linkToRaw = parsed["link-to"];
+  const linkPairs: { id: string; type: string }[] = [];
+  if (typeof linkToRaw === "string" && linkToRaw.length > 0) {
+    for (const pair of linkToRaw.split(",")) {
+      const trimmed = pair.trim();
+      if (!trimmed) continue;
+      const colonIdx = trimmed.lastIndexOf(":");
+      if (colonIdx <= 0 || colonIdx === trimmed.length - 1) {
+        console.error(`Invalid --link-to entry: "${trimmed}". Expected "<memory-id>:<REL_TYPE>" (e.g. "abc-123:SOLVES").`);
+        process.exit(1);
+      }
+      linkPairs.push({
+        id: trimmed.slice(0, colonIdx),
+        type: trimmed.slice(colonIdx + 1),
+      });
+    }
   }
 
   const { db, close } = await createDb();
@@ -583,6 +605,7 @@ async function cmdRecall(args: string[]): Promise<void> {
       project_path: parsed["project"] ?? undefined,
       limit: parseIntArg(parsed["limit"]) ?? 20,
       offset: parseIntArg(parsed["offset"]) ?? 0,
+      observability_classifier: buildClassifierFromArgs(parsed),
     };
 
     const result = await handleRecallMemories(db, toolArgs);
@@ -598,7 +621,7 @@ async function cmdRelated(args: string[]): Promise<void> {
   const positional = (parsed["_positional"] as string[]) ?? [];
 
   if (positional.length === 0) {
-    console.error("Usage: memorygraph related <memory-id> [--types SOLVES,CAUSES] [--max-depth 2]");
+    console.error("Usage: memorygraph related <memory-id> [--types SOLVES,CAUSES] [--max-depth 2] [--repo-root <path>]");
     process.exit(1);
   }
 
@@ -608,6 +631,7 @@ async function cmdRelated(args: string[]): Promise<void> {
       memory_id: positional[0],
       relationship_types: parseList(parsed["types"]),
       max_depth: parseIntArg(parsed["max-depth"]) ?? 2,
+      observability_classifier: buildClassifierFromArgs(parsed),
     };
 
     const result = await handleGetRelatedMemories(db, toolArgs);
@@ -672,6 +696,12 @@ async function cmdAutolink(args: string[]): Promise<void> {
   } finally {
     await close();
   }
+}
+
+function buildClassifierFromArgs(parsed: Record<string, unknown>): Classifier | undefined {
+  const repoRootRaw = parsed["repo-root"];
+  const repoRoot = typeof repoRootRaw === "string" ? repoRootRaw : process.cwd();
+  return buildObservabilityClassifier({ repoRoot });
 }
 
 async function cmdStats(_args: string[]): Promise<void> {
@@ -950,7 +980,7 @@ async function cmdContextualSearch(args: string[]): Promise<void> {
   const positional = (parsed["_positional"] as string[]) ?? [];
 
   if (positional.length === 0 && !parsed["memory-id"]) {
-    console.error("Usage: memorygraph contextual-search <memory-id> --query <text> [--max-depth 2]");
+    console.error("Usage: memorygraph contextual-search <memory-id> --query <text> [--max-depth 2] [--repo-root <path>]");
     process.exit(1);
   }
 
@@ -960,6 +990,7 @@ async function cmdContextualSearch(args: string[]): Promise<void> {
       memory_id: positional[0] ?? parsed["memory-id"],
       query: parsed["query"] ?? "",
       max_depth: parseIntArg(parsed["max-depth"]) ?? 2,
+      observability_classifier: buildClassifierFromArgs(parsed),
     };
 
     const result = await handleContextualSearch(db, toolArgs);
