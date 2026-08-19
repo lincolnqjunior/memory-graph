@@ -499,6 +499,27 @@ async function cmdStore(args: string[]): Promise<void> {
 
     const result = await handleStoreMemory(db, toolArgs);
     console.log(result.text);
+
+    // If --link-to was supplied, create edges from the new memory to each target.
+    const idMatch = result.text.match(/ID:\s*([0-9a-f-]{36})/i);
+    const newMemoryId = idMatch?.[1];
+    if (newMemoryId && linkPairs.length > 0) {
+      const { isRelationshipType } = await import("./models.js");
+      for (const link of linkPairs) {
+        if (!isRelationshipType(link.type)) {
+          console.error(`Invalid relationship type: "${link.type}". See --help for valid types.`);
+          throw new ExitError(1);
+        }
+        const target = await db.getMemory(link.id, false);
+        if (!target) {
+          console.error(`Link target memory not found: "${link.id}". Store aborted; new memory remains orphaned but valid.`);
+          throw new ExitError(1);
+        }
+        await db.createRelationship(newMemoryId, link.id, link.type as any);
+        console.log(`Linked: ${newMemoryId} -[${link.type}]-> ${link.id}`);
+      }
+    }
+
     if (result.isError) throw new ExitError(1);
   } finally {
     await close();
@@ -582,6 +603,7 @@ async function cmdSearch(args: string[]): Promise<void> {
       offset: parseIntArg(parsed["offset"]) ?? 0,
       search_tolerance: parsed["tolerance"] ?? "normal",
       match_mode: parsed["match-mode"] ?? "any",
+      observability_classifier: buildClassifierFromArgs(parsed),
     };
 
     const result = await handleSearchMemories(db, toolArgs);
@@ -597,7 +619,7 @@ async function cmdRecall(args: string[]): Promise<void> {
   const query = parsed["query"] ?? (parsed["_positional"] as string[])?.join(" ");
 
   if (!query || query === true) {
-    console.error("Usage: memorygraph recall --query <natural language query> [--limit 20] [--project <path>]");
+    console.error("Usage: memorygraph recall --query <natural language query> [--limit 20] [--project <path>] [--repo-root <path>]");
     process.exit(1);
   }
 
